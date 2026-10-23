@@ -456,6 +456,14 @@ else
     echo "  [SKIP] ota_update.sh tests (jq not installed)"
 fi
 
+# ---- ota_update.sh: get_version ignores the files around it ----
+
+eval "$(grep '^get_version()' "$OTA")"
+begin ota_get_version_ignores_files
+touch "$TMP/a"
+check "letters dropped with a file named a in the directory" test "$(cd "$TMP" && get_version v4.4.0)" = 4004000000
+end
+
 # ---- ota_update.sh: the bootstrap runs only a script ----
 
 begin ota_bootstrap_runs_only_a_script
@@ -497,7 +505,7 @@ pkill() { :; }
 clear() { :; }
 udhcpc() {
     echo "$*" > "$TMP/udhcpc_args"
-    while [ ! -f "$TMP/stop" ]; do command sleep 0.1; done
+    while [ -d "$TMP" ] && [ ! -f "$TMP/stop" ]; do command sleep 0.1; done
 }
 (enable_wifi > /dev/null 2>&1; touch "$TMP/returned") &
 n=0
@@ -1319,17 +1327,53 @@ check "\"Refresh roms\" and \"Refresh all roms\" differ (same in: ${same_refresh
 end
 
 begin select_menu_labels_fit
-# Open MainUI's SELECT menu with Silky RedOnion: a 320 px popup, text from
-# x 20, so 300 px for a label. The list font is wqy-microhei at 25 px in
-# bold: SDL_ttf's bold adds 2 px (25 / 10) to every glyph, so a label is its
-# Pillow width plus 2 px a character (within 3 px of SDL_ttf for these
-# labels). Arabic and Bengali are drawn in the bold Noto fonts. Keys: 27
-# Refresh roms, 54 Refresh all roms, 55 Add to favorites. Needs Pillow;
+# Open MainUI's SELECT menu with Silky RedOnion: text from x 20 of the
+# popup art (bg-pop-menu-N.png; 4 to 6 rows repeat the 3-row one), so a
+# label has the art's width less 20. The list font is wqy-microhei at 25 px
+# in bold: SDL_ttf's bold adds 2 px (25 / 10) to every glyph, so a label is
+# its Pillow width plus 2 px a character (within 3 px of SDL_ttf for these
+# labels). Arabic and Bengali are drawn in the bold Noto fonts. Every label
+# the menu can show (src/menus/context.c) in every language. Needs Pillow;
 # skipped without it.
-# Still too wide, waiting for shorter translations (remove a line once its
-# label fits; the test fails while a listed label already fits):
-known_wide="ca:54 de:54 de:55 es:54 fr:54 gl:54 gr:54 gr:55 id:54 ja-ryu:55
-nl:55 oc:54 pl:54 pt-BR:54 pt-BR:55 pt:27 pt:54 pt:55 ro:54 ru:55"
+too_wide=$(python3 - "$ROOT/static/build/miyoo/app" "$ROOT/static/build/Themes/Silky RedOnion/skin" << 'EOF'
+import json, pathlib, sys
+try:
+    from PIL import Image, ImageFont
+except ImportError:
+    sys.exit(0)
+app, skin = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+widths = {Image.open(skin / f"bg-pop-menu-{n}.png").width for n in (1, 2, 3)}
+if len(widths) != 1:
+    print(f"popup art widths differ: {sorted(widths)}")
+    sys.exit(0)
+room = widths.pop() - 20
+ids = (51, 55, 52, 50, 405, 128, 27, 401, 402, 400, 403, 404, 406,
+       54, 153, 18, 1, 2, 107, 15, 125, 407, 86)
+wqy = ImageFont.truetype(str(app / "wqy-microhei.ttc"), 25)
+noto = {"ar": ImageFont.truetype(str(app / "NotoSansArabicUI-Bold.ttf"), 25),
+        "bn": ImageFont.truetype(str(app / "NotoSansBengaliUI-Bold.ttf"), 25)}
+for p in sorted((app / "lang").glob("*.lang")):
+    d = json.loads(p.read_text(encoding="utf-8-sig"))
+    for key in ids:
+        text = d.get(str(key), "")
+        width = (noto[p.stem].getlength(text) if p.stem in noto
+                 else wqy.getlength(text) + 2 * len(text))
+        if width > room:
+            print(f"{p.stem}:{key}")
+EOF
+)
+check "SELECT menu labels fit Silky RedOnion's popup (too wide: $(echo $too_wide))" test -z "$too_wide"
+end
+
+begin select_menu_labels_fit_320px_themes
+# The same labels in a theme with the stock 320 px popup art (300 px for a
+# label): Open MainUI 1.0.10 shortens the ones that do not fit with "...".
+# "Add to favorites" uses each language's own "Add favorite" (303), which
+# also matches "Remove Favorite" in the same menu. Still too wide, kept as
+# translated until a native speaker offers a shorter one (remove a line once
+# its label fits; the test fails while a listed label already fits):
+known_wide="ca:54 de:54 es:54 fr:54 gl:54 gr:52 gr:54 id:54 oc:54 pl:54
+pt-BR:54 pt:54 ro:54"
 result=$(python3 - "$ROOT/static/build/miyoo/app" "$known_wide" << 'EOF'
 import json, pathlib, sys
 try:
@@ -1338,14 +1382,16 @@ except ImportError:
     sys.exit(0)
 app = pathlib.Path(sys.argv[1])
 known = set(sys.argv[2].split())
+ids = (51, 55, 52, 50, 405, 128, 27, 401, 402, 400, 403, 404, 406,
+       54, 153, 18, 1, 2, 107, 15, 125, 407, 86)
 wqy = ImageFont.truetype(str(app / "wqy-microhei.ttc"), 25)
 noto = {"ar": ImageFont.truetype(str(app / "NotoSansArabicUI-Bold.ttf"), 25),
         "bn": ImageFont.truetype(str(app / "NotoSansBengaliUI-Bold.ttf"), 25)}
 wide = set()
 for p in sorted((app / "lang").glob("*.lang")):
     d = json.loads(p.read_text(encoding="utf-8-sig"))
-    for key in ("27", "54", "55"):
-        text = d.get(key, "")
+    for key in ids:
+        text = d.get(str(key), "")
         width = (noto[p.stem].getlength(text) if p.stem in noto
                  else wqy.getlength(text) + 2 * len(text))
         if width > 300:
@@ -1356,7 +1402,7 @@ EOF
 )
 new=$(echo "$result" | sed -n 's/^new=//p')
 fixed=$(echo "$result" | sed -n 's/^fixed=//p')
-check "SELECT menu labels fit 300 px (too wide: ${new:-none})" test -z "$new"
+check "SELECT menu labels fit a 320 px popup (too wide: ${new:-none})" test -z "$new"
 check "the known-wide list is current (now fit: ${fixed:-none})" test -z "$fixed"
 end
 
@@ -1522,6 +1568,132 @@ miyoodir=$miyoodir_saved
 unset -f log sleep ifconfig udhcpc iw wifi_on
 end
 
+begin pdf_reader_hint_says_menu_closes_a_pdf
+# The list's "START to exit" made people think START also closes a PDF, but
+# inside the Green reader MENU does (START toggles a view option), and some
+# forced a shutdown. The PDF Reader passes its own hint; other callers (the
+# video player) keep the default.
+SEL="$ROOT/static/build/.tmp_update/script/file_selector.sh"
+mkdir -p "$TMP/media"
+: > "$TMP/media/a.pdf"
+printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -b ] && printf %%s "$2" > "%s/hint"; shift; done\necho "[ ] a.pdf"\n' "$TMP" > "$TMP/shellect"
+chmod +x "$TMP/shellect"
+sed "s#/mnt/SDCARD/.tmp_update/script/shellect.sh#$TMP/shellect#" "$SEL" > "$TMP/sel.sh"
+sh "$TMP/sel.sh" "Videos" "$TMP/media" "pdf" > /dev/null 2>&1
+check "default hint kept" grep -qx "Press A to open, START to exit." "$TMP/hint"
+check "the choice is written" grep -q "/a.pdf" "$TMP/media/.selected.pls"
+sh "$TMP/sel.sh" "PDF Reader" "$TMP/media" "pdf" "A: open, START: exit, MENU: close a PDF." > /dev/null 2>&1
+check "a caller's hint is shown" grep -qx "A: open, START: exit, MENU: close a PDF." "$TMP/hint"
+check "the PDF Reader passes the MENU hint" grep -qF '"pdf" "A: open, START: exit, MENU: close a PDF."' "$ROOT/static/packages/App/PDF Reader (Green)/App/Green/launch.sh"
+end
+
+begin media_apps_keys_do_what_the_list_says
+# PDF Reader and Video Player end to end, with the real launch.sh,
+# file_selector.sh and shellect.sh in a pseudo terminal. A fake "st" types
+# the keys the device's terminal sends: A is a space, START a newline, MENU a
+# lone Esc, the D-pad Esc [ A..D. The PDF reader and the player are stubs
+# that note the file and return at once, like MENU closing a PDF.
+# The hint says "A: open, START: exit": START used to reopen the last file,
+# because the terminal now ends with 143, not 137, and the last choice was
+# still on disk, so the only way out was to power off.
+if command -v python3 > /dev/null 2>&1; then
+    SD="$TMP/sd"
+    mkdir -p "$SD/.tmp_update/script" "$SD/.tmp_update/bin/green" "$SD/Media/PDF" "$SD/Media/Videos" "$TMP/sys"
+    sed "s#/mnt/SDCARD#$SD#g" "$ROOT/static/build/.tmp_update/script/file_selector.sh" > "$SD/.tmp_update/script/file_selector.sh"
+    cp "$ROOT/static/build/.tmp_update/script/shellect.sh" "$SD/.tmp_update/script/shellect.sh"
+    chmod +x "$SD/.tmp_update/script/file_selector.sh" "$SD/.tmp_update/script/shellect.sh"
+    : > "$SD/Media/PDF/a.pdf"
+    : > "$SD/Media/PDF/b.pdf"
+    : > "$SD/Media/Videos/a.mp4"
+    # The interpreter in the #! line itself (not env): quit_terminal looks for
+    # a parent process named "st", and env would leave it named python3.
+    {
+        printf '#!%s\n' "$(command -v python3)"
+        cat << 'EOF'
+# st -q -e command...: run it in a pty and type the next scene's keys.
+import fcntl, os, pty, select, struct, sys, termios, time
+args = sys.argv[1:]
+while args and args[0] in ("-q", "-e"):
+    args = args[1:]
+d = os.environ["FAKE_ST"]
+n = int(open(d + "/scene").read()) + 1 if os.path.exists(d + "/scene") else 1
+open(d + "/scene", "w").write(str(n))
+if not os.path.exists(f"{d}/keys.{n}"):
+    sys.exit(137)  # out of scenes: stop a launcher that would loop
+keys = open(f"{d}/keys.{n}").read().split()
+send = {"A": b" ", "START": b"\n", "MENU": b"\x1b", "UP": b"\x1b[A", "DOWN": b"\x1b[B"}
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(args[0], args)
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+def pump(t):
+    end = time.time() + t
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            try:
+                os.read(fd, 4096)
+            except OSError:
+                return
+pump(1.0)
+for k in keys:
+    os.write(fd, send[k])
+    pump(0.6)
+while True:
+    done, status = os.waitpid(pid, os.WNOHANG)
+    if done:
+        break
+    pump(0.1)
+sys.exit(os.waitstatus_to_exitcode(status) & 0xFF)
+EOF
+    } > "$SD/.tmp_update/bin/st"
+    chmod +x "$SD/.tmp_update/bin/st"
+    printf '#!/bin/sh\necho "$1" >> "%s/opened"\n' "$TMP" > "$SD/.tmp_update/bin/green/green"
+    printf '#!/bin/sh\nfor a; do last=$a; done\necho "$last" >> "%s/played"\n' "$TMP" > "$SD/.tmp_update/bin/ffplay"
+    chmod +x "$SD/.tmp_update/bin/green/green" "$SD/.tmp_update/bin/ffplay"
+    PDF_LAUNCH="$ROOT/static/packages/App/PDF Reader (Green)/App/Green/launch.sh"
+    VID_LAUNCH="$ROOT/static/packages/App/Video Player (FFplay)/App/FFplay/launch.sh"
+    sed -e "s#/mnt/SDCARD#$SD#g" "$PDF_LAUNCH" > "$TMP/pdf.sh"
+    sed -e "s#/mnt/SDCARD#$SD#g" -e "s#/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor#$TMP/sys/governor#g" -e "s#/tmp/stay_awake#$TMP/stay_awake#g" "$VID_LAUNCH" > "$TMP/video.sh"
+    export FAKE_ST="$TMP/st"
+    scenes() { # keys for each time the list opens
+        rm -rf "$FAKE_ST" "$TMP/opened" "$TMP/played"
+        mkdir -p "$FAKE_ST"
+        i=0
+        for s; do
+            i=$((i + 1))
+            echo "$s" > "$FAKE_ST/keys.$i"
+        done
+    }
+    lists_shown() { cat "$FAKE_ST/scene"; }
+
+    # Open a.pdf (the list starts with ../), close it, then START.
+    scenes "DOWN A" "START"
+    timeout 30 sh "$TMP/pdf.sh" > /dev/null 2>&1
+    check "PDF: A opens the file under the cursor" test "$(cat "$TMP/opened" 2> /dev/null)" = "$SD/Media/PDF/a.pdf"
+    check "PDF: START in the list leaves the app (no reopening)" test "$(lists_shown)" = 2
+
+    # MENU in the list leaves too.
+    scenes "MENU"
+    timeout 30 sh "$TMP/pdf.sh" > /dev/null 2>&1
+    check "PDF: MENU in the list leaves the app" sh -c "test ! -f '$TMP/opened' && test \"\$(cat '$FAKE_ST/scene')\" = 1"
+
+    # Two PDFs in a row, then START.
+    scenes "DOWN A" "DOWN DOWN A" "START"
+    timeout 30 sh "$TMP/pdf.sh" > /dev/null 2>&1
+    check "PDF: the second choice opens the second file" test "$(sed -n 2p "$TMP/opened")" = "$SD/Media/PDF/b.pdf"
+    check "PDF: then START leaves" test "$(lists_shown)" = 3
+
+    # Video Player: same list, same keys.
+    scenes "DOWN A" "START"
+    timeout 30 sh "$TMP/video.sh" > /dev/null 2>&1
+    check "Video: A plays the file under the cursor" test "$(cat "$TMP/played" 2> /dev/null)" = "$SD/Media/Videos/a.mp4"
+    check "Video: START in the list leaves the app" test "$(lists_shown)" = 2
+    unset FAKE_ST
+    unset -f scenes lists_shown
+fi
+end
+
 begin release_named_redonion_with_onionplus_copy
 # The project is RedOnion. Updaters before the rename (beta 8 and earlier)
 # select an asset containing "OnionPlus-v", so every release also carries
@@ -1586,6 +1758,54 @@ rmdir "$TMP/net/wlan0"
 sysdir="$TMP/sys" WIFI_NET_DIR="$TMP/net" sh "$PS" off
 check "Wi-Fi off: nothing to do, no error" [ $? -eq 0 ]
 check "and iw is not called" [ ! -e "$TMP/iw" ]
+end
+
+begin update_cleanup_keeps_ssh_host_key
+# The update cleanup in miyoo/app/MainUI removed .tmp_update/etc, so dropbear
+# generated a new host key on every update and SSH/SFTP clients warned (#292).
+mainui="${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}/static/dist/miyoo/app/MainUI"
+cleanup=$(grep -e '-maxdepth 0' "$mainui")
+mkdir -p "$TMP/sys/etc/dropbear" "$TMP/sys/bin" "$TMP/sys/config" "$TMP/sys/onionVersion"
+echo key > "$TMP/sys/etc/dropbear/dropbear_ed25519_host_key"
+(cd "$TMP/sys" && eval "$cleanup")
+check "the SSH host key survives" test -f "$TMP/sys/etc/dropbear/dropbear_ed25519_host_key"
+check "config and onionVersion survive" test -d "$TMP/sys/config" -a -d "$TMP/sys/onionVersion"
+check "old system files are removed" test ! -e "$TMP/sys/bin"
+end
+
+begin cores_have_systemid
+# The GameSwitcher sends RetroArch GET_STATUS, answered with the core's
+# systemid: a core whose .info had none crashed RetroArch with error 139 (#283).
+cores="${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}/static/build/RetroArch/.retroarch/cores"
+missing=""
+for so in "$cores"/*_libretro.so; do
+    grep -q '^systemid = "..*"' "${so%.so}.info" 2> /dev/null || missing="$missing ${so##*/}"
+done
+check "every core shipped has a systemid${missing:+:$missing}" test -z "$missing"
+end
+
+begin migration_adds_core_systemid
+mig="${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}/static/build/.tmp_update/script/migration/00024_core_info_systemid.sh"
+mkdir -p "$TMP/cores"
+printf 'corename = "GW"\nsystemname = "Handheld Electronic"' > "$TMP/cores/gw_libretro.info"
+printf 'systemid = "game_boy_advance"\n' > "$TMP/cores/gpsp_libretro.info"
+touch "$TMP/cores/core_info.cache"
+CORES_DIR="$TMP/cores" sh "$mig"
+CORES_DIR="$TMP/cores" sh "$mig"
+check "gw gets a systemid" grep -qx 'systemid = "handheld_electronic"' "$TMP/cores/gw_libretro.info"
+check "added once" test "$(grep -c systemid "$TMP/cores/gw_libretro.info")" = 1
+check "the last line stays intact" grep -qx 'systemname = "Handheld Electronic"' "$TMP/cores/gw_libretro.info"
+check "a core with a systemid is left alone" test "$(cat "$TMP/cores/gpsp_libretro.info")" = 'systemid = "game_boy_advance"'
+check "the core info cache is removed" test ! -e "$TMP/cores/core_info.cache"
+end
+
+begin installer_version_ignores_files
+# Like get_version in ota_update.sh (#297): unquoted, [:alpha:] matched a file
+# named a, l, p, h or : in the current directory and v4.4.0 read as 0004000000.
+eval "$(extract_fn "$INSTALLER" version)"
+mkdir -p "$TMP/glob" && touch "$TMP/glob/a"
+check "letters dropped with a file named a in the directory" test "$(cd "$TMP/glob" && version v4.4.0)" = 4004000000
+unset -f version
 end
 
 echo ""
